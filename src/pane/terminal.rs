@@ -3135,13 +3135,24 @@ fn ghostty_line_from_cells(
     Ok(line.trim_end().to_string())
 }
 
+const fn is_interlinear_annotation(ch: char) -> bool {
+    matches!(ch, '\u{fff9}'..='\u{fffb}')
+}
+
+fn strip_interlinear_annotations(text: &mut String) {
+    if !text.is_ascii() && text.chars().any(is_interlinear_annotation) {
+        text.retain(|ch| !is_interlinear_annotation(ch));
+    }
+}
+
 fn ghostty_cell_symbol(
     cells: &crate::ghostty::RowCellIter<'_>,
 ) -> Result<String, crate::ghostty::Error> {
     if cells.wide()? == crate::ghostty::CellWide::SpacerTail {
         return Ok(String::new());
     }
-    let text = cells.grapheme_text()?;
+    let mut text = cells.grapheme_text()?;
+    strip_interlinear_annotations(&mut text);
     if text.chars().next().map(u32::from) == Some(crate::ghostty::KITTY_UNICODE_PLACEHOLDER) {
         return Ok(" ".to_string());
     }
@@ -3210,6 +3221,7 @@ fn ghostty_buffer_symbol_into<'a>(
         crate::ghostty::CellWide::SpacerHead => symbol_scratch.push(' '),
         crate::ghostty::CellWide::Narrow | crate::ghostty::CellWide::Wide => {
             cells.grapheme_text_into(grapheme_bytes, symbol_scratch)?;
+            strip_interlinear_annotations(symbol_scratch);
             let hidden_kitty_placeholder = hide_kitty_placeholders
                 && symbol_scratch.chars().next().map(u32::from)
                     == Some(crate::ghostty::KITTY_UNICODE_PLACEHOLDER);
@@ -5787,6 +5799,21 @@ mod tests {
             "wide spacer tail must stay empty so the host terminal does not overwrite the voiced kana"
         );
         assert_eq!(buffer[(2, 0)].symbol(), "Z");
+    }
+
+    #[test]
+    fn interlinear_annotation_markers_are_stripped_from_rendered_cells() {
+        let mut terminal = crate::ghostty::Terminal::new(30, 1, 0).unwrap();
+        terminal.write("    \u{fff9}wrapped\u{fffa}line\u{fffb}".as_bytes());
+
+        let cells = render_cells_to_symbols(&mut terminal);
+        assert_eq!(cells[3].1, " ");
+        assert!(
+            cells.iter().all(|(_, symbol)| !symbol
+                .chars()
+                .any(|ch| matches!(ch, '\u{fff9}'..='\u{fffb}'))),
+            "expected interlinear annotation markers to be stripped, got {cells:?}"
+        );
     }
 
     #[test]
